@@ -1,0 +1,906 @@
+---
+title: "Predicting Summer Bikeshare Demand in Jersey City"
+author: "Emily Zhou"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: simplex
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+    code_download: yes
+editor_options:
+  markdown:
+    wrap: sentence
+---
+
+Version 1.0 \| First Created Nov 4, 2023 \| Updated Nov 15, 2023
+
+Keywords: Transportation Planning, Rideshare Forecast, Spatial and Serial Autocorrelation, Nested Tibble, OLS Regression, time lag, gganimate, purrr
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Introduction
+
+
+
+
+
+# Set Up
+
+```{r library and data, include=FALSE}
+library(tidyverse)
+library(sf)
+library(lubridate)
+library(tigris)
+library(gganimate)
+library(riem)
+library(gridExtra)
+library(knitr)
+library(kableExtra)
+library(tidycensus)
+library(mapview)
+library(sfdep)
+library(spdep)
+library(caret)
+
+options(tigris_class = "sf")
+source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
+
+palette5 <- c("#124E78","#F0F0C9","#F2BB05","#D74E09","#6E0E0A")
+palette4 <- c("#124E78","#F0F0C9","#F2BB05","#6E0E0A")
+palette2 <- c("#124E78","#6E0E0A")
+
+nycbike <- read.csv("/Users/emzhou/Downloads/JC-202308-citibike-tripdata.csv")
+tidycensus::census_api_key("e79f3706b6d61249968c6ce88794f6f556e5bf3d", overwrite = TRUE)
+```
+
+
+```{r obtain census data and geometry, warning=FALSE, message=FALSE, results='hide', cache=TRUE}
+
+njCensus <- get_acs(geography = "tract", 
+          variables = c("B01003_001", "B19013_001", 
+                        "B02001_002", "B08013_001",
+                        "B08012_001", "B08301_001", 
+                        "B08301_010", "B01002_001"), 
+          year = 2021, 
+          state = "NJ", 
+          geometry = TRUE, 
+          county=c("Hudson"),
+          output = "wide") %>%
+  rename(Total_Pop =  B01003_001E,
+         Med_Inc = B19013_001E,
+         Med_Age = B01002_001E,
+         White_Pop = B02001_002E,
+         Travel_Time = B08013_001E,
+         Num_Commuters = B08012_001E,
+         Means_of_Transport = B08301_001E,
+         Total_Public_Trans = B08301_010E) %>%
+  select(Total_Pop, Med_Inc, White_Pop, Travel_Time,
+         Means_of_Transport, Total_Public_Trans,
+         Med_Age,
+         GEOID, geometry) %>%
+  mutate(Percent_White = White_Pop / Total_Pop,
+         Mean_Commute_Time = Travel_Time / Total_Public_Trans,
+         Percent_Taking_Public_Trans = Total_Public_Trans / Means_of_Transport)
+
+jcTracts <- njCensus %>%
+  as.data.frame() %>%
+  distinct(GEOID, .keep_all = TRUE) %>%
+  select(GEOID, geometry) %>% 
+  st_sf()
+```
+
+
+```{r add census tract}
+
+bike_census <- st_join(nycbike %>% 
+                         filter(is.na(start_lat) == FALSE &
+                                is.na(start_lng) == FALSE &
+                                is.na(end_lat) == FALSE &
+                                is.na(end_lng) == FALSE) %>%
+                         st_as_sf(., coords = c("start_lng", "start_lat"), crs = 4326),
+                       jcTracts %>%  st_transform(crs=4326),
+                       join=st_intersects, left = TRUE) %>%
+  rename(Origin.Tract = GEOID) %>%
+  mutate(start_lng = unlist(map(geometry, 1)),
+         start_lat = unlist(map(geometry, 2)))%>%
+  filter(!(ride_id %in% c("BEC9CC4D1007C753", "86087F431785EDE7", "A1AAB92631439883", "71938DA085242DCC", "4203C77668C47C75", "C92410CA2AEF3947", "6E02CBF36C90F244", "0259885253FD238E", "B39136B37AFB5FE9", "1EC9376D1559C51C", "CDDF16D3A37BE370"))) %>% 
+  as.data.frame()
+  
+```
+
+
+```{r temporal feature engineering}
+
+bike_census <- bike_census %>%
+  mutate(interval60 = floor_date(ymd_hms(started_at), unit = "hour"),
+         interval15 = floor_date(ymd_hms(started_at), unit = "15 mins"),
+         week = week(interval60),
+         dotw = wday(interval60, label=TRUE)) %>% 
+  mutate(time_of_day = case_when(hour(interval60) < 7 | hour(interval60) > 18 ~ "Overnight",
+                                 hour(interval60) >= 7 & hour(interval60) < 10 ~ "AM Rush",
+                                 hour(interval60) >= 10 & hour(interval60) < 15 ~ "Mid-Day",
+                                 hour(interval60) >= 15 & hour(interval60) <= 18 ~ "PM Rush")) %>% 
+  mutate(hour = hour(started_at),
+                weekend = ifelse(dotw %in% c("Sun", "Sat"), "Weekend", "Weekday"))
+```
+
+
+```{r distribution of stations}
+
+ggplot()+
+  geom_sf(data = jcTracts %>%
+          st_transform(crs=4326), fill="white")+
+  geom_point(data = bike_census, aes(x=start_lng, y = start_lat), 
+            color = "#6E0E0A", alpha = 1, size = 0.3) + 
+  ylim(min(bike_census$start_lat), max(bike_census$start_lat))+
+  xlim(min(bike_census$start_lng), max(bike_census$start_lng)) +
+  labs(title = "Location of Rides Starting Points in Jersey City") +
+  theme(axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks =element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, linewidth=0.8)
+        )
+
+```
+
+
+```{r origin-desintation matrix, warning=FALSE}
+
+lines <- st_sfc(
+  lapply(1:nrow(bike_census), function(i) {
+    st_linestring(matrix(c(bike_census[i, "start_lng"], bike_census[i, "start_lat"],
+                            bike_census[i, "end_lng"], bike_census[i, "end_lat"]), ncol = 2, byrow = TRUE))
+  }))
+
+lines_sf <- st_sf(geometry = lines)
+lines_sf <- st_set_crs(lines_sf, 4326)
+
+Route <- lines_sf %>% head(200)
+mapview(Route, zcol = NULL, color = "#6E0E0A", linewidth = 0.001, alpha = 0.3) # only show 200
+```
+
+
+# Exploratory Analysis
+
+## Temporal Analysis
+
+```{r bikeshare viz1}
+ggplot(bike_census %>%
+         group_by(interval60) %>%
+         tally())+
+  geom_line(aes(x = interval60, y = n), color= "#6E0E0A")+
+  labs(title="Bike Share Trips Per Hour in Jersey City, Aug 2023",
+       x="Date", 
+       y="Number of trips") + 
+theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=8),
+        axis.text.y=element_text(size=8), 
+        axis.title=element_text(size=10), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
+  
+```
+
+
+
+
+```{r bikeshare viz2, warning=FALSE, message=FALSE}
+
+bike_census %>%
+        group_by(interval60, start_station_name, time_of_day) %>%
+         tally()%>%
+  group_by(start_station_name, time_of_day)%>%
+  summarize(mean_trips = mean(n))%>%
+  ggplot()+
+  geom_histogram(aes(mean_trips, fill=time_of_day), binwidth = 1)+
+  scale_fill_manual(values = palette4, name="Time of Day") + 
+  labs(title="Mean Number of Hourly Trips Per Station",
+       x="Number of trips", 
+       y="Frequency")+
+  facet_wrap(~time_of_day) +
+theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=8),
+        axis.text.y=element_text(size=8), 
+        axis.title=element_text(size=10), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
+
+```
+
+
+```{r bikeshare viz3}
+
+ggplot(bike_census %>%
+         group_by(interval60, start_station_name) %>%
+         tally())+
+  geom_histogram(aes(n), binwidth = 5, fill="#6E0E0A")+
+  labs(title="Bike Share Trips Per Hour by Station in Jersey City, Aug 2023",
+       x="Trip Counts", 
+       y="Number of Stations") + 
+    theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=8),
+        axis.text.y=element_text(size=8), 
+        axis.title=element_text(size=10), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
+
+```
+
+
+```{r bikeshare viz4}
+
+ggplot(bike_census %>% mutate(hour = hour(started_at)))+
+     geom_freqpoly(aes(hour, color = dotw), binwidth = 3, lwd = 0.8)+
+  scale_color_manual(values = c("#124E78", "#819FA1", "#F0F0C9", "#F2BB05", "#E58507", "#D74E09", "#6E0E0A"), name = "Day") + 
+  labs(title="Bike Share Trips in Jersey City by Day of the Week, Aug 2023",
+       x="Hour", 
+       y="Trip Counts") + 
+  theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=8),
+        axis.text.y=element_text(size=8), 
+        axis.title=element_text(size=10), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
+
+```
+
+
+```{r bikeshare viz 5}
+
+ggplot(bike_census)+
+     geom_freqpoly(aes(hour, color = weekend), binwidth = 3, lwd = 1.2)+
+  scale_color_manual(values=palette2) + 
+  labs(color = "Time of Week") +
+  labs(title="Bike Share Trips in Jersey City - Weekend vs Weekday, Aug 2023",
+       x="Hour", 
+       y="Trip Counts") + 
+  theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=8),
+        axis.text.y=element_text(size=8), 
+        axis.title=element_text(size=10), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
+
+```
+
+
+```{r bikeshare viz 7, fig.width=10}
+
+to_plot <- bike_census%>% # only show 100 stations
+  group_by(start_station_id, start_lat, start_lng, weekend, time_of_day, start_station_name) %>%
+  tally() %>% 
+  arrange(-n) %>% 
+  head(100) 
+to_plot$ID <- seq_along(to_plot$start_station_id)
+
+to_plot %>% 
+  arrange(-n) %>%
+  head(50) %>% 
+  ggplot(aes(x = reorder(ID, -n), n, fill = time_of_day, color = weekend)) +
+  scale_fill_manual(values = palette4, name="Time of Day") + 
+  guides(color="none") + 
+  geom_bar(stat = "identity", position="stack") +
+  scale_color_manual(values = c("transparent", "black")) +
+  labs(title="Top 50 Occurences of Rides By Time")+
+  ylab("Number of Rides") +
+  xlab("") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(), 
+        axis.text.y=element_text(size=8), 
+        axis.title=element_text(size=10), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
+```
+
+
+## Spatial Analysis
+
+```{r bikeshare viz 6}
+
+ggplot()+
+  geom_sf(data = jcTracts %>%
+          st_transform(crs=4326), fill = "white")+
+  geom_point(data = to_plot,
+             aes(x=start_lng, y = start_lat, size=n), color = alpha("#6E0E0A", 0.7)) + 
+  ylim(min(bike_census$start_lat), max(bike_census$start_lat))+
+  xlim(min(bike_census$start_lng), max(bike_census$start_lng)) +
+  scale_size(range = c(0.5, 8)) + 
+  labs(size = "Number of Rides") +
+  facet_grid(weekend ~ time_of_day) + 
+    labs(title="Locations of Stations with Greatest Bikeshare Demand by Time")+ 
+  theme(axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks =element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, linewidth=0.8)
+        )
+```
+
+
+
+```{r spatial auto cor, warning=FALSE}
+
+moran_data <- bike_census %>%
+  group_by(start_station_id, start_lat, start_lng, start_station_name) %>%
+  tally() %>% 
+  arrange(-n) %>% 
+  head(80) %>% 
+  st_as_sf(., coords = c("start_lng", "start_lat"), crs = 4326)
+
+
+coords <-  st_coordinates(moran_data) 
+neighborList <- knn2nb(knearneigh(coords, 5))
+spatialWeights <- nb2listw(neighborList, style="W")
+
+moranTest <- moran.mc(moran_data$n, 
+                      spatialWeights, nsim = 999)
+
+ggplot(as.data.frame(moranTest$res[c(1:999)]), aes(moranTest$res[c(1:999)])) +
+  geom_histogram(binwidth = 0.01, fill = "#124E78") +
+  geom_vline(aes(xintercept = moranTest$statistic), colour = "#6E0E0A" ,lwd=1) +
+  scale_x_continuous(limits = c(-0.5, 0.5)) +
+  labs(title = "Observed and Permuted Moran's I for Stations with Most Rides",
+       subtitle = "Observed Moran's I in Red",
+       x = "Moran's I",
+       y = "Count") +
+  theme_light() +   
+theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=8),
+        axis.text.y=element_text(size=8), 
+        axis.title=element_text(size=10))
+```
+
+
+```{r spatial cor viz}
+
+  ggplot() +
+  geom_sf(data = jcTracts, fill = "white") +
+  geom_sf(data = moran_data,
+          aes(size = n, color = n)) + 
+  ylim(min(bike_census$start_lat), max(bike_census$start_lat))+
+  xlim(min(bike_census$start_lng), max(bike_census$start_lng)) + 
+  scale_size(
+    range = c(1, 6),
+    guide = guide_legend(
+      direction = "horizontal",
+      nrow = 1,
+      label.position = "bottom")) +
+  scale_color_gradientn(colours = hcl.colors(5, "RdBu",rev = TRUE, alpha = 0.9), 
+                        guide = guide_legend(direction = "horizontal", nrow = 1)) +
+  labs(title = "Stations with Most Rides",
+       subtitle =  "Dot size proportional to rides") + 
+  theme(legend.position = "bottom") + 
+  theme(axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks =element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, linewidth=0.8)
+        )
+
+```
+
+```{r animate map temporal viz, message=FALSE, warning=FALSE, cache=TRUE, results='hide', fig.show='animate'}
+
+week33 <-
+  filter(bike_census , week == 33 & dotw == "Mon")
+
+week33.panel <-
+  expand.grid(
+    interval15 = unique(week33$interval15),
+    Origin.Tract = unique(bike_census$Origin.Tract))
+
+bike.animation.data <-
+  mutate(week33, Trip_Counter = 1) %>%
+    right_join(week33.panel) %>% 
+    group_by(interval15, Origin.Tract) %>%
+    summarize(Trip_Count = sum(Trip_Counter, na.rm=T)) %>% 
+    ungroup() %>% 
+    left_join(jcTracts, by=c("Origin.Tract" = "GEOID")) %>%
+    st_sf() %>%
+    mutate(Trips = case_when(Trip_Count == 0 ~ "0 trips",
+                             Trip_Count > 0 & Trip_Count <= 3 ~ "1-3 trips",
+                             Trip_Count > 3 & Trip_Count <= 6 ~ "4-6 trips",
+                             Trip_Count > 6 & Trip_Count <= 10 ~ "7-10 trips",
+                             Trip_Count > 10 ~ "11+ trips")) %>%
+    mutate(Trips  = fct_relevel(Trips, "0 trips","1-3 trips","4-6 trips",
+                                       "7-10 trips","10+ trips"))
+
+bikeshare_animation <-
+  ggplot() +
+    geom_sf(data = bike.animation.data, aes(fill = Trips)) +
+    scale_fill_manual(values = palette5) +
+    labs(title = "Bikeshare For One Day in Aug 2023",
+         subtitle = "15 minute intervals: {current_frame}") +
+    transition_manual(interval15)  + 
+  theme(axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks =element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, linewidth=0.8)
+        )
+  
+
+animate(bikeshare_animation, duration=40, renderer = gifski_renderer())
+
+```
+
+## Weather Analysis
+
+```{r download and wrangle weather data, warning=FALSE}
+
+weather.Panel <- 
+  riem_measures(station = "EWR", date_start = "2023-08-01", date_end = "2023-09-01") %>%
+  dplyr::select(valid, tmpf, p01i, sknt)%>%
+  replace(is.na(.), 0) %>%
+    mutate(interval60 = ymd_h(substr(valid,1,13))) %>%
+    mutate(week = week(interval60),
+           dotw = wday(interval60, label=TRUE)) %>%
+    group_by(interval60) %>%
+    summarize(Temperature = max(tmpf),
+              Precipitation = sum(p01i),
+              Wind_Speed = max(sknt)) %>%
+    mutate(Temperature = ifelse(Temperature == 0, 42, Temperature))
+
+```
+
+
+```{r visualize weather data, fig.height=11, fig.width=8, warning=FALSE}
+
+grid.arrange(
+  ggplot(weather.Panel, aes(interval60,Precipitation)) + geom_line(color="#6E0E0A") + 
+    labs(title="Percipitation", x="Hour", y="Perecipitation") + 
+    theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=8),
+        axis.text.y=element_text(size=8), 
+        axis.title=element_text(size=10), 
+        panel.background = element_blank()), 
+  ggplot(weather.Panel, aes(interval60,Wind_Speed)) + geom_line(color="#D74E09") + 
+    labs(title="Wind Speed", x="Hour", y="Wind Speed") +
+    theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=8),
+        axis.text.y=element_text(size=8), 
+        axis.title=element_text(size=10), 
+        panel.background = element_blank()),  
+  ggplot(weather.Panel, aes(interval60,Temperature)) + geom_line(color="#124E78") + 
+    labs(title="Temperature", x="Hour", y="Temperature") +theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=8),
+        axis.text.y=element_text(size=8), 
+        axis.title=element_text(size=10), 
+        panel.background = element_blank()), 
+  top="Weather Data ")
+
+```
+
+
+# Space-Time Panel
+
+```{r create study panel, warning=FALSE, message=FALSE}
+
+study.panel <- 
+  expand.grid(interval60=unique(bike_census$interval60), 
+              start_station_id = unique(bike_census$start_station_id)) %>%
+  left_join(., bike_census %>%
+              select(start_station_id, start_station_name, Origin.Tract, start_lng, start_lat)%>%
+              distinct() %>%
+              group_by(start_station_id) %>%
+              slice(1))
+```
+
+
+```{r add info to study panel, warning=FALSE, message=FALSE}
+
+bike.panel <- 
+  bike_census %>%
+  mutate(Trip_Counter = 1) %>%
+  right_join(study.panel) %>% 
+  group_by(interval60, start_station_id, start_station_name, Origin.Tract, start_lng, start_lat) %>%
+  summarize(Trip_Count = sum(Trip_Counter, na.rm=T)) %>%
+  left_join(weather.Panel) %>%
+  ungroup() %>%
+  filter(is.na(start_station_id) == FALSE) %>%
+  mutate(week = week(interval60),
+         dotw = wday(interval60, label = TRUE)) %>%
+  filter(is.na(Origin.Tract) == FALSE) %>% 
+  left_join(., njCensus %>%
+              as.data.frame() %>%
+              select(-geometry), by = c("Origin.Tract" = "GEOID"))
+
+```
+
+## Weather Correlation
+
+```{r visualize temp, warning=FALSE, message=FALSE}
+
+bike.panel %>%
+  group_by(interval60) %>% 
+  summarize(Trip_Count = mean(Trip_Count),
+            Temperature = first(Temperature)) %>%
+  mutate(week = week(interval60)) %>%
+  ggplot(aes(Temperature, Trip_Count)) + 
+    geom_point(color = "#6E0E0A") + geom_smooth(method = "lm", se= FALSE, color="#124E78") +
+    facet_wrap(~week, ncol=8) + 
+    labs(title="Trip Count As a Fuction of Temperature by Week",
+         x="Temperature", y="Mean Trip Count") + 
+  theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(), 
+        axis.text.y=element_text(size=8), 
+        axis.title=element_text(size=10), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
+  
+
+```
+
+
+```{r visualize wind, warning=FALSE, message=FALSE}
+bike.panel %>%
+  group_by(interval60) %>% 
+  summarize(Trip_Count = mean(Trip_Count),
+            Wind = first(Wind_Speed)) %>%
+  mutate(week = week(interval60)) %>%
+  ggplot(aes(Wind, Trip_Count)) + 
+    geom_point(color = "#6E0E0A") + geom_smooth(method = "lm", se= FALSE, color="#124E78") +
+    facet_wrap(~week, ncol=8) + 
+    labs(title="Trip Count As a Fuction of Wind by Week",
+         x="Wind Speed", y="Mean Trip Count") + 
+  theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(), 
+        axis.text.y=element_text(size=8), 
+        axis.title=element_text(size=10), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.8)) + 
+    theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(), 
+        axis.text.y=element_text(size=8), 
+        axis.title=element_text(size=10), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
+```
+
+
+## Serial Correlation
+```{r calculate serial lag}
+
+bike.panel <- 
+  bike.panel %>% 
+  arrange(start_station_id, interval60) %>% 
+  mutate(lagHour = dplyr::lag(Trip_Count,1),
+         lag2Hours = dplyr::lag(Trip_Count,2),
+         lag3Hours = dplyr::lag(Trip_Count,3),
+         lag4Hours = dplyr::lag(Trip_Count,4),
+         lag12Hours = dplyr::lag(Trip_Count,12),
+         lag1day = dplyr::lag(Trip_Count,24)) %>%
+   mutate(day = yday(interval60))
+
+```
+
+
+```{r visualize serial correlations, message=FALSE, warning=FALSE}
+
+as.data.frame(bike.panel) %>%
+    group_by(interval60) %>% 
+    summarise_at(vars(starts_with("lag"), "Trip_Count"), mean, na.rm = TRUE) %>%
+    gather(Variable, Value, -interval60, -Trip_Count) %>%
+  ggplot(aes(x = Value , y = Trip_Count)) +
+    geom_point(size = 1, color = "#6E0E0A") + geom_smooth(method = "lm", se= FALSE, color="#124E78") +
+  facet_wrap(~Variable, ncol = 6)+
+  labs(x = "Variable", y = "Correlation", title = "Correlation Between Serial Lag Trips and Trip Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(), 
+        axis.text.y=element_text(size=8), 
+        axis.title=element_text(size=10), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
+
+```
+
+## Spatial Correlation
+
+```{r calculate spatial lag, message=FALSE, warning=FALSE}
+
+lag_result <- data.frame()
+
+for (d in 213:243) {
+  for (h in 0:23) {
+
+spacelag <- bike.panel %>% 
+  mutate(hour = hour(interval60)) %>% 
+  filter(day == d & hour == h) %>% 
+  st_as_sf(., coords = c("start_lng", "start_lat"), crs = 4326) 
+
+
+coords.test_lag <-  st_coordinates(spacelag) 
+neighborList.test_lag <- knn2nb(knearneigh(coords.test_lag, 5))
+spatialWeights.test_lag <- nb2listw(neighborList.test_lag, style="W")
+
+spacelag <- spacelag %>% mutate(lagTrip = lag.listw(spatialWeights.test_lag, Trip_Count))
+
+lag_result <- rbind(lag_result, spacelag)
+  }
+  
+}
+
+bike.panel <- lag_result %>% 
+  mutate(start_lng = unlist(map(geometry, 1)),
+         start_lat = unlist(map(geometry, 2))) %>% 
+ st_drop_geometry() 
+  
+  
+```
+
+
+```{r visualize spatial correlation, message=FALSE, warning=FALSE}
+
+bike.panel %>%
+  group_by(interval60) %>% 
+  summarize(Trip_Count = mean(Trip_Count),
+            Lag_Count = mean(lagTrip)) %>%
+  mutate(week = week(interval60)) %>%
+  ggplot(aes(Lag_Count, Trip_Count)) + 
+    geom_point(size = 1, color = "#6E0E0A") + geom_smooth(method = "lm", se= FALSE, color="#124E78") +
+    facet_wrap(~week, ncol=8) + 
+    labs(title="Correlation Between Spatial Lag Trips and Trip Count",
+         x="Lag Trip Count", y="Mean Trip Count") + 
+  theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(), 
+        axis.text.y=element_text(size=8), 
+        axis.title=element_text(size=10), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
+
+```
+
+
+# OLS Regression
+
+```{r fitting regression}
+
+bike.Train <- filter(bike.panel, week <= 33)
+bike.Test <- filter(bike.panel, week > 33)
+
+# Time
+reg1 <- 
+  lm(Trip_Count ~  hour(interval60) + dotw + Temperature + Wind_Speed, data=bike.Train)
+
+# Space
+reg2 <- 
+  lm(Trip_Count ~  start_station_name + dotw + Temperature + Wind_Speed,  data=bike.Train)
+
+# Time and Space
+reg3 <- 
+  lm(Trip_Count ~  start_station_name + hour(interval60) + dotw + Temperature + Wind_Speed, 
+     data=bike.Train)
+
+# Time and Space and TimeLag and SpaceLag
+reg4 <- 
+  lm(Trip_Count ~  start_station_name +  hour(interval60) + dotw + Temperature + Wind_Speed +
+                   lagHour + lag2Hours + lag12Hours + lag1day + lagTrip, 
+     data=bike.Train)
+```
+
+## Making Predictions
+
+```{r nest data, warning=FALSE}
+
+bike.Test.weekNest <- 
+  bike.Test %>%
+  nest(-week) 
+
+```
+
+
+```{r predict function}
+
+model_pred <- function(dat, fit){
+   pred <- predict(fit, newdata = dat)}
+
+```
+
+
+```{r making predictions, warning=FALSE}
+
+week_predictions <- 
+  bike.Test.weekNest %>% 
+    mutate(ATime_FE = map(.x = data, fit = reg1, .f = model_pred),
+           BSpace_FE = map(.x = data, fit = reg2, .f = model_pred),
+           CTime_Space_FE = map(.x = data, fit = reg3, .f = model_pred),
+           DTime_Space_FE_Lags = map(.x = data, fit = reg4, .f = model_pred)) %>% 
+    gather(Regression, Prediction, -data, -week) %>%
+    mutate(Observed = map(data, pull, Trip_Count),
+           Absolute_Error = map2(Observed, Prediction,  ~ abs(.x - .y)),
+           MAE = map_dbl(Absolute_Error, mean, na.rm = TRUE),
+           sd_AE = map_dbl(Absolute_Error, sd, na.rm = TRUE))
+
+```
+
+## Error Analysis
+
+```{r plot errors}
+
+week_predictions %>%
+  dplyr::select(week, Regression, MAE) %>%
+  gather(Variable, MAE, -Regression, -week) %>%
+  ggplot(aes(week, MAE)) + 
+    geom_bar(aes(fill = Regression), position = "dodge", stat="identity") +
+    scale_fill_manual(values = palette4) +
+    labs(title = "Mean Absolute Errors by Model Specification and Week") +
+  theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(), 
+        axis.text.y=element_text(size=8), 
+        axis.title=element_text(size=10), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
+
+```
+
+
+```{r comparing predicted and observed, fig.height=8, fig.width=11, message=FALSE, warning=FALSE, cache=TRUE}
+
+week_predictions %>% 
+    mutate(interval60 = map(data, pull, interval60),
+           start_station_id = map(data, pull, start_station_id)) %>%
+    dplyr::select(interval60, start_station_id, Observed, Prediction, Regression) %>%
+    unnest() %>%
+    gather(Variable, Value, -Regression, -interval60, -start_station_id) %>%
+    group_by(Regression, Variable, interval60) %>%
+    summarize(Value = sum(Value)) %>%
+    ggplot(aes(interval60, Value, colour=Variable)) + 
+      geom_line(size = 1.1) + 
+      scale_color_manual(values=palette2)+
+      facet_wrap(~Regression, ncol=1) +
+      labs(title = "Predicted/Observed Bike Share Time Series", subtitle = "Jersey City: a test set of 2 weeks",  x = "Hour", y= "Station Trips") + 
+   theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(), 
+        axis.text.y=element_text(size=8), 
+        axis.title=element_text(size=10), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
+
+```
+
+
+```{r error by station, warning=FALSE, message=FALSE, cache=TRUE}
+
+week_predictions %>% 
+    mutate(interval60 = map(data, pull, interval60),
+           start_station_id = map(data, pull, start_station_id), 
+           start_latitude = map(data, pull, start_lat), 
+           start_longitude = map(data, pull, start_lng)) %>%
+    select(interval60, start_station_id, start_longitude, start_latitude, Observed, Prediction, Regression) %>%
+    unnest() %>%
+  filter(Regression == "DTime_Space_FE_Lags") %>%
+  group_by(start_station_id, start_longitude, start_latitude) %>%
+  summarize(MAE = mean(abs(Observed-Prediction), na.rm = TRUE))%>%
+ggplot(.)+
+  geom_sf(data = jcTracts,  fill = "white")+
+  geom_point(aes(x = start_longitude, y = start_latitude, color = MAE), 
+             fill = "transparent")+
+  scale_color_continuous(low = "#124E78", high = "#6E0E0A", name= "MAE")+
+ ylim(min(bike_census$start_lat), max(bike_census$start_lat))+
+  xlim(min(bike_census$start_lng), max(bike_census$start_lng)) +
+  labs(title="Mean Abs Error, Test Set, Model 4") + 
+  theme(axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks =element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, linewidth=0.8)
+        )
+
+```
+
+
+```{r comparing errors across space and time, warning=FALSE, message=FALSE, cache=TRUE}
+
+week_predictions %>% 
+    mutate(interval60 = map(data, pull, interval60),
+           start_station_id = map(data, pull, start_station_id), 
+           start_latitude = map(data, pull, start_lat), 
+           start_longitude = map(data, pull, start_lng),
+           dotw = map(data, pull, dotw) ) %>%
+    select(interval60, start_station_id, start_longitude, 
+           start_latitude, Observed, Prediction, Regression,
+           dotw) %>%
+    unnest() %>%
+  filter(Regression == "DTime_Space_FE_Lags")%>%
+  mutate(weekend = ifelse(dotw %in% c("Sun", "Sat"), "Weekend", "Weekday"),
+         time_of_day = case_when(hour(interval60) < 7 | hour(interval60) > 18 ~ "Overnight",
+                                 hour(interval60) >= 7 & hour(interval60) < 10 ~ "AM Rush",
+                                 hour(interval60) >= 10 & hour(interval60) < 15 ~ "Mid-Day",
+                                 hour(interval60) >= 15 & hour(interval60) <= 18 ~ "PM Rush")) %>%
+  group_by(start_station_id, weekend, time_of_day, start_longitude, start_latitude) %>%
+  summarize(MAE = mean(abs(Observed-Prediction), na.rm = TRUE))%>%
+  ggplot(.)+
+  geom_sf(data = jcTracts, color = "grey", fill = "transparent")+
+  geom_point(aes(x = start_longitude, y = start_latitude, color = MAE), 
+             fill = "transparent", size = 0.5)+
+  scale_color_continuous(low = "#124E78", high = "#6E0E0A", name= "MAE")+
+ ylim(min(bike_census$start_lat), max(bike_census$start_lat))+
+  xlim(min(bike_census$start_lng), max(bike_census$start_lng)) +
+  facet_grid(weekend~time_of_day)+
+  labs(title="Mean Absolute Errors by Time, Test Set, Model 4") + 
+  theme(axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks =element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"),
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, linewidth=0.8)
+        )
+```
+
+## Cross-Validation
+
+```{r cross validation}
+
+fitControl <- trainControl(method = "cv", number = 100)
+
+reg.cv <- train(Trip_Count ~ start_station_name +  hour(interval60) + dotw + Temperature + Wind_Speed + lagHour + lag2Hours + lag12Hours + lag1day + lagTrip, data=bike.panel, method = "lm", trControl = fitControl, na.action = na.pass)
+
+reg.cv$resample %>% 
+  summarise(MAE = mean(reg.cv$resample[,3]),
+            sd(reg.cv$resample[,3])
+) %>%
+  kbl(col.name=c('Mean Absolute Error','Standard Deviation of MAE')) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+
+
+
+
