@@ -204,7 +204,7 @@ theme(plot.subtitle = element_text(size = 9,face = "italic"),
         axis.text.y=element_text(size=8), 
         axis.title=element_text(size=10), 
         panel.background = element_blank(),
-        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
+        panel.border = element_rect(colour = "grey", fill=NA, linewidth =0.8))
   
 ```
 Then, we visualized the distribution of trips by stations at each hour in August. We may see that the distribution of rides is highly right skewed, with most stations having zero or a few number of trips each hour and a couple of stations having much more rides, up to 40 or even 50 rides at a particular hour on a particular day in August 2023. 
@@ -293,6 +293,7 @@ ggplot(bike_census)+
         panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
 
 ```
+
 Building onto that, we group this dataset by station and time of day to visualize the total number of trips at each station during a specific period of time on weekday or weekend. To simplify our visualization, we selected the top 50 occurrences in our dataset. Note that here, each bar represent an instance of station-time of day-weekday/weekend combination. We are able to see that PM rush hour indeed sees that greatest bikeshare demand for a couple of stations in particular. Weekend rides only appear three times in the top 50 list. Zooming into the detail reveals to us that **Grove St PATH** station observes a total of 1117 rides during PM rush on a weekday, 801 rides overnight on a weekday in August 2023. **South Waterfront Walkway - Sinatra Dr & 1 St** station observes 319 rides overnight on a weekend and 731 rides during PM rush on a weekday in August 2023. 
 
 ```{r bikeshare viz 7, fig.width=10}
@@ -390,7 +391,7 @@ theme(plot.subtitle = element_text(size = 9,face = "italic"),
 ```
 
 
-```{r spatial cor viz}
+```{r spatial cor viz, fig.height=8, fig.width=11}
 
   ggplot() +
   geom_sf(data = jcTracts, fill = "white") +
@@ -422,7 +423,7 @@ theme(plot.subtitle = element_text(size = 9,face = "italic"),
 
 ```
 
-```{r animate map temporal viz, message=FALSE, warning=FALSE, cache=TRUE, results='hide', fig.show='animate'}
+```{r animate map temporal viz, message=FALSE, warning=FALSE, cache=TRUE, fig.show='animate'}
 
 week33 <-
   filter(bike_census , week == 33 & dotw == "Mon")
@@ -467,9 +468,15 @@ bikeshare_animation <-
         )
   
 
-animate(bikeshare_animation, duration=40, renderer = gifski_renderer())
+#animate(bikeshare_animation, duration=40, renderer = gifski_renderer())
+
+anim_save("animation.gif", animation = bikeshare_animation, end_pause = 4, height = 800, width = 300, fps = 6, renderer = gifski_renderer())
+
+
 
 ```
+
+
 
 ## Weather Analysis
 
@@ -531,7 +538,7 @@ study.panel <-
   expand.grid(interval60=unique(bike_census$interval60), 
               start_station_id = unique(bike_census$start_station_id)) %>%
   left_join(., bike_census %>%
-              select(start_station_id, start_station_name, Origin.Tract, start_lng, start_lat, rideable_type)%>%
+              select(start_station_id, start_station_name, Origin.Tract, start_lng, start_lat)%>%
               distinct() %>%
               group_by(start_station_id) %>%
               slice(1))
@@ -544,7 +551,7 @@ bike.panel <-
   bike_census %>%
   mutate(Trip_Counter = 1) %>%
   right_join(study.panel) %>% 
-  group_by(interval60, start_station_id, start_station_name, Origin.Tract, start_lng, start_lat) %>%
+  group_by(interval60, start_station_id, start_station_name, Origin.Tract, start_lng, start_lat, rideable_type) %>%
   summarize(Trip_Count = sum(Trip_Counter, na.rm=T)) %>%
   left_join(weather.Panel) %>%
   ungroup() %>%
