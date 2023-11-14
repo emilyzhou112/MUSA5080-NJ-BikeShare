@@ -26,9 +26,13 @@ knitr::opts_chunk$set(echo = TRUE)
 
 # Introduction
 
+Bikeshare programs have become an integral part of urban transportation system, providing a sustainable and convenient alternative to traditional commuting methods. Citi Bike is one of the earliest bicycle sharing system created by Lyft in 2008 at NYC. But in recent years, this program also extends to Jersey City across the Hudson River in order to cater to the dynamic mobility needs of residents who had to commute to Manhattan for work. As the popularity of Citi Bike continues to soar, there arises a pressing need for effective management strategies to ensure the availability of bikes at each station in Jersey City. 
 
+Bikesharing (and ridesharing) inherently involves the challenge of maintaining a delicate equilibrium in bike distribution, ie. "re-balancing". This issue arises from the spatial and temporal variations in user demand. If certain stations experience a surge in demand during morning rush hours while others witness a decline, this could result in station clusters with depleted or surplus bike stocks, thereby compromising user experience. Companies like Uber & Lyft generate and analyze tremendous amounts of data to incentivize bike (ride) share use, solve routing problems, calculate pricing, and obviously forecast demands, but they are not very transparent about the algorithm they use. Therefore, the goal of this report is keep a simple, but open source version of bikeshare demand prediction, by harnessing of power of machine learning, particularly the Ordinary Least Square (OLS) regression to rapidly predict the demand for bikes across various stations in Jersey City. We will perform analysis on the historical data on bike usage at different stations and different time as well as under different weather conditions. The forecast allows the Citi Bike program to proactively address imbalances, strategically re-positioning bikes in anticipation of peak usage time or special events. 
 
+The subsequent sections on this report is organized as follows. Firstly, we load in our datasets for a quick examinations and perform some necessary feature engineering. Secondly, we conduct exploratory analysis on the temporal and spatial aspects of bikeshare data. We will also look at some weather data in this process. Thirdly, we create a space-time panel where each row is a unique instance of time-space combination of rides and visualize the correlation between space, time, weather, and number of rides. And finally, we make created four different models, test their sensibility to errors, and conduct cross validation. 
 
+The GitHub repository for this report is [here](https://github.com/emilyzhou112/MUSA5080-NJ-BikeShare).
 
 # Set Up
 
@@ -47,6 +51,7 @@ library(mapview)
 library(sfdep)
 library(spdep)
 library(caret)
+library (readr)
 
 options(tigris_class = "sf")
 source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
@@ -55,12 +60,14 @@ palette5 <- c("#124E78","#F0F0C9","#F2BB05","#D74E09","#6E0E0A")
 palette4 <- c("#124E78","#F0F0C9","#F2BB05","#6E0E0A")
 palette2 <- c("#124E78","#6E0E0A")
 
-nycbike <- read.csv("/Users/emzhou/Downloads/JC-202308-citibike-tripdata.csv")
 tidycensus::census_api_key("e79f3706b6d61249968c6ce88794f6f556e5bf3d", overwrite = TRUE)
 ```
 
+The data we use here is obtained from [NYC OpenData](https://s3.amazonaws.com/tripdata/index.html) that contains the latest record of Citi Bike usage on a monthly base. Note that while Jersey City is located in New Jersey, Citi Bike is mainly operated in NYC and therefore its dataset is also operated by NYC. We selected all bikeshare data in Jersey City from Aug 1 2023 to Aug 31 2023 as our temporal frame. The dataset mainly includes locations and names of stations of which the user started the ride as well as end the ride. In addition, we also downloaded the census tract geometries of the entire Hudson County via tidycensus, which includes Jersey City. 
 
-```{r obtain census data and geometry, warning=FALSE, message=FALSE, results='hide', cache=TRUE}
+```{r obtain census geom and bike data, warning=FALSE, message=FALSE, results='hide', cache=TRUE}
+
+nycbike <- read.csv(url("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-NJ-BikeShare/main/JC-202308-citibike-tripdata.csv"))
 
 njCensus <- get_acs(geography = "tract", 
           variables = c("B01003_001", "B19013_001", 
@@ -95,6 +102,7 @@ jcTracts <- njCensus %>%
   st_sf()
 ```
 
+Since our raw bikeshare data is a non-spatial layer, despite containing spatial attributes, our next step is to make it spatial by joining it to the census geometry. We are only interested in the start location of each ride because we want to predict the capacity of each station when the user need a bike to start the ride. This requires us to filter out rows with missing latitude and longitude. We also found that some stations have erroneous longitude and latitude coding that lead to these points being located in the Hudson River. These points also need to be removed. 
 
 ```{r add census tract}
 
@@ -114,22 +122,7 @@ bike_census <- st_join(nycbike %>%
   
 ```
 
-
-```{r temporal feature engineering}
-
-bike_census <- bike_census %>%
-  mutate(interval60 = floor_date(ymd_hms(started_at), unit = "hour"),
-         interval15 = floor_date(ymd_hms(started_at), unit = "15 mins"),
-         week = week(interval60),
-         dotw = wday(interval60, label=TRUE)) %>% 
-  mutate(time_of_day = case_when(hour(interval60) < 7 | hour(interval60) > 18 ~ "Overnight",
-                                 hour(interval60) >= 7 & hour(interval60) < 10 ~ "AM Rush",
-                                 hour(interval60) >= 10 & hour(interval60) < 15 ~ "Mid-Day",
-                                 hour(interval60) >= 15 & hour(interval60) <= 18 ~ "PM Rush")) %>% 
-  mutate(hour = hour(started_at),
-                weekend = ifelse(dotw %in% c("Sun", "Sat"), "Weekend", "Weekday"))
-```
-
+The following visualization shows all the steps we did above. 
 
 ```{r distribution of stations}
 
@@ -154,6 +147,24 @@ ggplot()+
 
 ```
 
+We will perform some basic feature engineering using R's powerful `lubridate` package to extract some temporal information for each ride. This includes calculating the 60min and 15min interval for the starting time of each ride, and categorizing these intervals into by the time of day into "Overnight", "AM Rush", "Mid-Day", and "PM Rush" and by day of week into weekday and weekend. 
+
+```{r temporal feature engineering}
+
+bike_census <- bike_census %>%
+  mutate(interval60 = floor_date(ymd_hms(started_at), unit = "hour"),
+         interval15 = floor_date(ymd_hms(started_at), unit = "15 mins"),
+         week = week(interval60),
+         dotw = wday(interval60, label=TRUE)) %>% 
+  mutate(time_of_day = case_when(hour(interval60) < 7 | hour(interval60) > 18 ~ "Overnight",
+                                 hour(interval60) >= 7 & hour(interval60) < 10 ~ "AM Rush",
+                                 hour(interval60) >= 10 & hour(interval60) < 15 ~ "Mid-Day",
+                                 hour(interval60) >= 15 & hour(interval60) <= 18 ~ "PM Rush")) %>% 
+  mutate(hour = hour(started_at),
+                weekend = ifelse(dotw %in% c("Sun", "Sat"), "Weekend", "Weekday"))
+```
+
+Interested in seeing the commuting patterns to get a sense of rider's daily behavior, we created line strings that connect between the start and end locations of each ride. For the simplicity of visualization, we only visualize 200 rides. We may see that most of the rides occur within Jersey City, but there are also people who commute using Citi Bike from Jersey City to Manhattan.  
 
 ```{r origin-desintation matrix, warning=FALSE}
 
@@ -173,7 +184,11 @@ mapview(Route, zcol = NULL, color = "#6E0E0A", linewidth = 0.001, alpha = 0.3) #
 
 # Exploratory Analysis
 
+In this section, we delve into some further exploratory analysis of our data set. 
+
 ## Temporal Analysis
+
+Starting with temporal analysis, we first visualized the bikeshare trips per hour in Jersey City in August 2023. It is clear that there's some form of circularity in that there are both peak hours and non-peak hours during a single day. Also, we may see that five consecutive higher peaks are usually followed by two less higher peaks. These correspond to high bikeshare need during rush hours and low bikeshare needs overnight, in early mornings, and over the weekend
 
 ```{r bikeshare viz1}
 ggplot(bike_census %>%
@@ -192,9 +207,28 @@ theme(plot.subtitle = element_text(size = 9,face = "italic"),
         panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
   
 ```
+Then, we visualized the distribution of trips by stations at each hour in August. We may see that the distribution of rides is highly right skewed, with most stations having zero or a few number of trips each hour and a couple of stations having much more rides, up to 40 or even 50 rides at a particular hour on a particular day in August 2023. 
 
+```{r bikeshare viz3}
 
+ggplot(bike_census %>%
+         group_by(interval60, start_station_name) %>%
+         tally())+
+  geom_histogram(aes(n), binwidth = 5, fill="#6E0E0A")+
+  labs(title="Bike Share Trips Per Hour by Station in Jersey City, Aug 2023",
+       x="Trip Counts", 
+       y="Number of Stations") + 
+    theme(plot.subtitle = element_text(size = 9,face = "italic"),
+        plot.title = element_text(size = 12, face = "bold"), 
+        axis.text.x=element_text(size=8),
+        axis.text.y=element_text(size=8), 
+        axis.title=element_text(size=10), 
+        panel.background = element_blank(),
+        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
 
+```
+
+We continue to visualize the distribution of mean number of trips at each station during different times of the day. We recognize that during PM rush, the average number of trips has been the highest throughout, with a couple of stations' average trip exceed 10, implying a relatively high demand for a single station. This is followed by ride demand in mid day, when some stations can have more than 5 rides. It is also surprising to notice that the demand is pretty high overnight, with a few stations having more than 5 rides. 
 
 ```{r bikeshare viz2, warning=FALSE, message=FALSE}
 
@@ -220,26 +254,7 @@ theme(plot.subtitle = element_text(size = 9,face = "italic"),
 
 ```
 
-
-```{r bikeshare viz3}
-
-ggplot(bike_census %>%
-         group_by(interval60, start_station_name) %>%
-         tally())+
-  geom_histogram(aes(n), binwidth = 5, fill="#6E0E0A")+
-  labs(title="Bike Share Trips Per Hour by Station in Jersey City, Aug 2023",
-       x="Trip Counts", 
-       y="Number of Stations") + 
-    theme(plot.subtitle = element_text(size = 9,face = "italic"),
-        plot.title = element_text(size = 12, face = "bold"), 
-        axis.text.x=element_text(size=8),
-        axis.text.y=element_text(size=8), 
-        axis.title=element_text(size=10), 
-        panel.background = element_blank(),
-        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
-
-```
-
+After that, we visualized the total number of trips in August separated by day of the week. The two main patterns here are that firstly, trip numbers vary by time of the day. Lowest trip counts occur in early morning while highest trip count occur in late afternoon. Secondly, Tuesday, Wednesday, and Thursday tend to observe higher number of trips. 
 
 ```{r bikeshare viz4}
 
@@ -258,7 +273,7 @@ ggplot(bike_census %>% mutate(hour = hour(started_at)))+
         panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
 
 ```
-
+Same type of visualize but this time separated between weekend and weekdays. It is very obvious that we see more trips during weekdays and less trips during weekends. Also, during weekends, number of trips start to increase much later than during weekdays, suggesting the missing of morning rush hour will significantly impact people's use of bikeshare services. 
 
 ```{r bikeshare viz 5}
 
@@ -278,7 +293,7 @@ ggplot(bike_census)+
         panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
 
 ```
-
+Building onto that, we group this dataset by station and time of day to visualize the total number of trips at each station during a specific period of time on weekday or weekend. To simplify our visualization, we selected the top 50 occurrences in our dataset. Note that here, each bar represent an instance of station-time of day-weekday/weekend combination. We are able to see that PM rush hour indeed sees that greatest bikeshare demand for a couple of stations in particular. Weekend rides only appear three times in the top 50 list. Zooming into the detail reveals to us that **Grove St PATH** station observes a total of 1117 rides during PM rush on a weekday, 801 rides overnight on a weekday in August 2023. **South Waterfront Walkway - Sinatra Dr & 1 St** station observes 319 rides overnight on a weekend and 731 rides during PM rush on a weekday in August 2023. 
 
 ```{r bikeshare viz 7, fig.width=10}
 
@@ -286,7 +301,7 @@ to_plot <- bike_census%>% # only show 100 stations
   group_by(start_station_id, start_lat, start_lng, weekend, time_of_day, start_station_name) %>%
   tally() %>% 
   arrange(-n) %>% 
-  head(100) 
+  head(50) 
 to_plot$ID <- seq_along(to_plot$start_station_id)
 
 to_plot %>% 
@@ -506,6 +521,7 @@ grid.arrange(
 
 ```
 
+Everything below needs re-run
 
 # Space-Time Panel
 
@@ -515,7 +531,7 @@ study.panel <-
   expand.grid(interval60=unique(bike_census$interval60), 
               start_station_id = unique(bike_census$start_station_id)) %>%
   left_join(., bike_census %>%
-              select(start_station_id, start_station_name, Origin.Tract, start_lng, start_lat)%>%
+              select(start_station_id, start_station_name, Origin.Tract, start_lng, start_lat, rideable_type)%>%
               distinct() %>%
               group_by(start_station_id) %>%
               slice(1))
@@ -901,6 +917,6 @@ reg.cv$resample %>%
 ```
 
 
-
+# Conclusion
 
 
