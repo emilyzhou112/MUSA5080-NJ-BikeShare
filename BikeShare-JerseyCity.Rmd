@@ -207,6 +207,7 @@ theme(plot.subtitle = element_text(size = 9,face = "italic"),
         panel.border = element_rect(colour = "grey", fill=NA, linewidth =0.8))
   
 ```
+
 Then, we visualized the distribution of trips by stations at each hour in August. We may see that the distribution of rides is highly right skewed, with most stations having zero or a few number of trips each hour and a couple of stations having much more rides, up to 40 or even 50 rides at a particular hour on a particular day in August 2023. 
 
 ```{r bikeshare viz3}
@@ -273,6 +274,7 @@ ggplot(bike_census %>% mutate(hour = hour(started_at)))+
         panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
 
 ```
+
 Same type of visualize but this time separated between weekend and weekdays. It is very obvious that we see more trips during weekdays and less trips during weekends. Also, during weekends, number of trips start to increase much later than during weekdays, suggesting the missing of morning rush hour will significantly impact people's use of bikeshare services. 
 
 ```{r bikeshare viz 5}
@@ -294,7 +296,7 @@ ggplot(bike_census)+
 
 ```
 
-Building onto that, we group this dataset by station and time of day to visualize the total number of trips at each station during a specific period of time on weekday or weekend. To simplify our visualization, we selected the top 50 occurrences in our dataset. Note that here, each bar represent an instance of station-time of day-weekday/weekend combination. We are able to see that PM rush hour indeed sees that greatest bikeshare demand for a couple of stations in particular. Weekend rides only appear three times in the top 50 list. Zooming into the detail reveals to us that **Grove St PATH** station observes a total of 1117 rides during PM rush on a weekday, 801 rides overnight on a weekday in August 2023. **South Waterfront Walkway - Sinatra Dr & 1 St** station observes 319 rides overnight on a weekend and 731 rides during PM rush on a weekday in August 2023. 
+Building onto that, we group this dataset by station and time of day to visualize the total number of trips at each station during a specific period of time on weekday or weekend. To simplify our visualization, we selected the top 50 occurrences in our dataset. Note that here, each bar represent an instance of station-time of day-weekday/weekend combination. We are able to see that PM rush hour indeed sees that greatest bikeshare demand for a couple of stations in particular. Weekend rides only appear three times in the top 50 list. Zooming into the detail reveals to us that **Grove St PATH** station observes a total of 1117 rides during PM rush on a weekday, 801 rides overnight on a weekday in August 2023. **Hoboken Terminal - River St & Hudson Pl** station observes a total of 864 rides during PM rush ona weekday. **South Waterfront Walkway - Sinatra Dr & 1 St** station observes 319 rides overnight on a weekend and 731 rides during PM rush on a weekday in August 2023. 
 
 ```{r bikeshare viz 7, fig.width=10}
 
@@ -330,6 +332,8 @@ to_plot %>%
 
 ## Spatial Analysis
 
+In addition to examining our data through temporal lens, we made some maps to show the actual location of stations with the greatest bikeshare demand by time of day and day of the week. This proportional map illustrates that stations receive the highest ride demand during PM rush and overnight in weekdays and the lowest demand during AM rush. Stations with the highest bikeshare demand are generally located along the Hudson River. This could be attributed to two reasons: there are simply more stations in this part of Jersey City or Citi Bike has strategically built bike stations along the Hudson River to make daily commute easier for those who live in Jersey City but need to work/study in Manhattan. 
+
 ```{r bikeshare viz 6}
 
 ggplot()+
@@ -355,7 +359,7 @@ ggplot()+
         )
 ```
 
-
+We grouped all the starting stations together to check for spatial autocorrelation between stations. We believe that stations with greater demand are more likely to be located to other stations with greater demand. In this case, we can use the demand of nearby stations at a particular time to estimate the demand of our target station. We selected 80 stations with the highest number of rides in August 2023 and computed the Moran's I with 999 random Monte Carlo simulation. The results show that our observed Moran's I is highly significant, implying that there's spatial autocorrelation between bikeshares at nearby stations.  
 
 ```{r spatial auto cor, warning=FALSE}
 
@@ -390,6 +394,7 @@ theme(plot.subtitle = element_text(size = 9,face = "italic"),
         axis.title=element_text(size=10))
 ```
 
+This map below shows how stations with higher bikeshare demand are clustered. In particular, there are two clusters of stations, and within each cluster, there are a few stations with particularly large number of rides. These stations are generally surrounded by stations with slightly less rides. 
 
 ```{r spatial cor viz, fig.height=8, fig.width=11}
 
@@ -422,6 +427,8 @@ theme(plot.subtitle = element_text(size = 9,face = "italic"),
         )
 
 ```
+
+This animated map below combines the spatial and temporal characteristics of bike rides at 15min interval into a choropleth map. 
 
 ```{r animate map temporal viz, message=FALSE, warning=FALSE, cache=TRUE, fig.show='animate'}
 
@@ -468,7 +475,6 @@ bikeshare_animation <-
         )
   
 
-#animate(bikeshare_animation, duration=40, renderer = gifski_renderer())
 
 anim_save("animation.gif", animation = bikeshare_animation, end_pause = 4, height = 800, width = 300, fps = 6, renderer = gifski_renderer())
 
@@ -476,9 +482,12 @@ anim_save("animation.gif", animation = bikeshare_animation, end_pause = 4, heigh
 
 ```
 
+![animate]("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-NJ-BikeShare/main/animation.gif")
 
 
 ## Weather Analysis
+
+On top of space and time, weather can be another significant factor of in predicting bikeshare demand. Generally, we believe bikeshare demand will decrease if it's on a rainy, windy, or a very hot day in our case.  With that in mind, we downloaded the weather data using the `riem_measures` function for Newark airport between Aug 1, 2023 and Sept 1, 2023. Note that the Newark Airport station sufficiently provides temporal weather for all of Jersey City. The weather.Panel is generated to summarize temperature, precipitation, and wind speed for every hour. 
 
 ```{r download and wrangle weather data, warning=FALSE}
 
@@ -497,6 +506,7 @@ weather.Panel <-
 
 ```
 
+For the temperature, precipitation, and wind data we collected during this month. We may see that there are a couple of rainy days in August. Wind speed is pretty consistent throughout with a couple of really windy days. Temperature fluctuates on a daily basis with higher temperature during the day and cooler temperature at night. 
 
 ```{r visualize weather data, fig.height=11, fig.width=8, warning=FALSE}
 
@@ -528,9 +538,10 @@ grid.arrange(
 
 ```
 
-Everything below needs re-run
 
 # Space-Time Panel
+
+In the following steps, we created a study panel where each instance in the panel is a unique combination of space and time. In other words, each row will represent the ride at a particular station during a particular hour. 
 
 ```{r create study panel, warning=FALSE, message=FALSE}
 
@@ -544,6 +555,7 @@ study.panel <-
               slice(1))
 ```
 
+We need to add some more information to this panel. This includes counting the number of rides at this station at this particular hour, adding weather information, bringing in census data, and calculating time and day of week using the `lubridate` package.  
 
 ```{r add info to study panel, warning=FALSE, message=FALSE}
 
@@ -551,7 +563,7 @@ bike.panel <-
   bike_census %>%
   mutate(Trip_Counter = 1) %>%
   right_join(study.panel) %>% 
-  group_by(interval60, start_station_id, start_station_name, Origin.Tract, start_lng, start_lat, rideable_type) %>%
+  group_by(interval60, start_station_id, start_station_name, Origin.Tract, start_lng, start_lat) %>%
   summarize(Trip_Count = sum(Trip_Counter, na.rm=T)) %>%
   left_join(weather.Panel) %>%
   ungroup() %>%
@@ -566,6 +578,8 @@ bike.panel <-
 ```
 
 ## Weather Correlation
+
+Now, we could perform more exploratory analysis on our panel data to prepare for our regression model. First, we would like to see how temperature will correlate with the number of bike rides in August. The figure below shows a significant, positive, strong, and linear relationship between temperature and mean trip count for all weeks in August. This means that as the temperature increase, bikeshare demand will increase as well. 
 
 ```{r visualize temp, warning=FALSE, message=FALSE}
 
@@ -591,6 +605,7 @@ bike.panel %>%
 
 ```
 
+Next, we would like to see how wind speed will correlate with the number of bike rides in August. We see that a linear and positive relationship between these two variables, but the strength of such relationship varies between different weeks. This generally means that we see more bikeshare demand during windy days. 
 
 ```{r visualize wind, warning=FALSE, message=FALSE}
 bike.panel %>%
@@ -623,6 +638,9 @@ bike.panel %>%
 
 
 ## Serial Correlation
+
+Should the number of trips exhibit serial (temporal) correlation, then the time lag features will lead to better predictions. The logic behind is that the number of trips at a particular hour will very much correlate with the number of trips immediately before or after that hour. If we know the number of trips at a particular hour, then it would be easier for us to estimate the number of rides around that time. To achieve that, we calculated 6 different forms of lag hours. 
+
 ```{r calculate serial lag}
 
 bike.panel <- 
@@ -638,6 +656,7 @@ bike.panel <-
 
 ```
 
+The relationship between these lag hours and number of trips are visualized. We see a strong, linear, and negative relationship between lag12hours and number of trips 12 hours before. This means for example, the number of rides we see at 5pm on a particular day is negatively correlated with the number of rides at 5am that day. In contrast, we see a strong, linear, and positive relationship between laghour and lag1day. This means that the number of rides at a particular hour is highly correlated with the number of rides in the immediate next hour and at the same time the following day. Other than that, the strength of the correlation decreases for lag2hour and lag3hour, meaning that the number of rides at 4pm on a particular day, is more correlated with the number of rides at 5pm, rather than at 6 or 7 pm. 
 
 ```{r visualize serial correlations, message=FALSE, warning=FALSE}
 
@@ -662,6 +681,8 @@ as.data.frame(bike.panel) %>%
 ```
 
 ## Spatial Correlation
+
+We've seen before that spatial autocorrelation exists here in that the number of trips at a particular station during a particular time is correlated with the number of trips at nearby stations. This means that if we know the number of trips at a station, we may be able to estimate the number of trips at the station next to it. Do achieve that, we created a new dataframe called `lag_result` and wrote a nested loop to loop through each hour in August 2023. For each hour, we then calculate the nearest 5 neighbor of each station and the average of rides for that 5 stations. The results were joined back to our panel dataset. 
 
 ```{r calculate spatial lag, message=FALSE, warning=FALSE}
 
@@ -695,6 +716,7 @@ bike.panel <- lag_result %>%
   
 ```
 
+The figure below shows that for all weeks in August, there's a strong, linear, and positive relationship between the number of trips and the number of trips in nearby stations. We will therefore include this variable in our following regression analysis. 
 
 ```{r visualize spatial correlation, message=FALSE, warning=FALSE}
 
@@ -722,6 +744,14 @@ bike.panel %>%
 
 # OLS Regression
 
+We split our 5 week data into training set, which includes 3 weeks and testing set, which include 2 weeks. After that, four different linear regression are estimaed on training data, each with different fixed effects. 
+
+- `reg1` focuses on just time, including hour fixed effects, day of the week, Wind Speed and Temperature.
+- `reg2` focuses on just space, including station and weather conditions. 
+- `reg3` focuses on the combined effect of space and time
+- `reg4` focuses adds the time and space lag features
+
+
 ```{r fitting regression}
 
 bike.Train <- filter(bike.panel, week <= 33)
@@ -733,7 +763,7 @@ reg1 <-
 
 # Space
 reg2 <- 
-  lm(Trip_Count ~  start_station_name + dotw + Temperature + Wind_Speed,  data=bike.Train)
+  lm(Trip_Count ~  start_station_name + Temperature + Wind_Speed,  data=bike.Train)
 
 # Time and Space
 reg3 <- 
@@ -749,22 +779,21 @@ reg4 <-
 
 ## Making Predictions
 
-```{r nest data, warning=FALSE}
+The purrr family of functions will be used to loop through a set of 'nested' data frames to efficiently compare across different model specifications. Before testing our data, we nested our data by week and created a model function. The first set of code separate our testing data into two tibbles. The small function is created that takes a tibble, dat and a regression model, fit as its inputs, and outputs predictions as pred. This function is used simply for prediction. 
+
+```{r nest data and predict function, warning=FALSE}
 
 bike.Test.weekNest <- 
   bike.Test %>%
   nest(-week) 
-
-```
-
-
-```{r predict function}
 
 model_pred <- function(dat, fit){
    pred <- predict(fit, newdata = dat)}
 
 ```
 
+
+The nested format allows one to loop through each model for each week and mutate summary statistics. In the code block below, week_predictions are calculated for each week in the testing set. The map function applies the `model_pred` function to each nested tibble. Take the first line of the below mutate, for example. A new column, Time_FE, includes predictions for reg1 - the time fixed effects model. The predictions are created by mapping the function, model_pred, to each row of data, parameterizing fit as the reg1 model.
 
 ```{r making predictions, warning=FALSE}
 
@@ -783,6 +812,8 @@ week_predictions <-
 ```
 
 ## Error Analysis
+
+Comparing the mean absolute errors for our four models, we find the error to be the higest for model 1, which only takes time effect into account. Model 2 and 3 account for space and space + time respectively, which lead to an increase in accuracy level. Adding space lag and time lag, however, will greatly improve the accuracy of our mode. We also ran the variance of inflation function in the background and checked to make sure that there's no colinerarity in model 4. 
 
 ```{r plot errors}
 
@@ -803,7 +834,7 @@ week_predictions %>%
         panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
 
 ```
-
+The figure below further demonstrates the accuracy of each model by comparing predicted to observed number of trips. Model 4 clearly stands out among the 4 models to have higher predicting power of bikeshare demand. 
 
 ```{r comparing predicted and observed, fig.height=8, fig.width=11, message=FALSE, warning=FALSE, cache=TRUE}
 
@@ -831,6 +862,7 @@ week_predictions %>%
 
 ```
 
+We also need to check if our prediction generalized across space and time. To do that, we mapped the error 
 
 ```{r error by station, warning=FALSE, message=FALSE, cache=TRUE}
 
