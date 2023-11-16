@@ -210,7 +210,7 @@ theme(plot.subtitle = element_text(size = 9,face = "italic"),
 
 Then, we visualized the distribution of trips by stations at each hour in August. We may see that the distribution of rides is highly right skewed, with most stations having zero or a few number of trips each hour and a couple of stations having much more rides, up to 40 or even 50 rides at a particular hour on a particular day in August 2023. 
 
-```{r bikeshare viz3}
+```{r bikeshare viz3, warning=FALSE}
 
 ggplot(bike_census %>%
          group_by(interval60, start_station_name) %>%
@@ -225,7 +225,7 @@ ggplot(bike_census %>%
         axis.text.y=element_text(size=8), 
         axis.title=element_text(size=10), 
         panel.background = element_blank(),
-        panel.border = element_rect(colour = "grey", fill=NA, size=0.8))
+        panel.border = element_rect(colour = "grey", fill=NA, linewidth =0.8))
 
 ```
 
@@ -296,7 +296,7 @@ ggplot(bike_census)+
 
 ```
 
-Building onto that, we group this dataset by station and time of day to visualize the total number of trips at each station during a specific period of time on weekday or weekend. To simplify our visualization, we selected the top 50 occurrences in our dataset. Note that here, each bar represent an instance of station-time of day-weekday/weekend combination. We are able to see that PM rush hour indeed sees that greatest bikeshare demand for a couple of stations in particular. Weekend rides only appear three times in the top 50 list. Zooming into the detail reveals to us that **Grove St PATH** station observes a total of 1117 rides during PM rush on a weekday, 801 rides overnight on a weekday in August 2023. **Hoboken Terminal - River St & Hudson Pl** station observes a total of 864 rides during PM rush ona weekday. **South Waterfront Walkway - Sinatra Dr & 1 St** station observes 319 rides overnight on a weekend and 731 rides during PM rush on a weekday in August 2023. 
+Building onto that, we group this dataset by station and time of day to visualize the total number of trips at each station during a specific period of time on weekday or weekend. To simplify our visualization, we selected the top 50 occurrences in our dataset. Note that here, each bar represent an instance of station-time of day-weekday/weekend combination. We are able to see that PM rush hour indeed sees that greatest bikeshare demand for a couple of stations in particular. Weekend rides only appear three times in the top 50 list. Zooming into the detail reveals to us that **Grove St PATH** station observes a total of 1117 rides during PM rush on a weekday, 801 rides overnight on a weekday in August 2023. **Hoboken Terminal - River St & Hudson Pl** station observes a total of 864 rides during PM rush on weekday. **South Waterfront Walkway - Sinatra Dr & 1 St** station observes 319 rides overnight on a weekend and 731 rides during PM rush on a weekday in August 2023. 
 
 ```{r bikeshare viz 7, fig.width=10}
 
@@ -476,13 +476,13 @@ bikeshare_animation <-
   
 
 
-anim_save("animation.gif", animation = bikeshare_animation, end_pause = 4, height = 800, width = 300, fps = 6, renderer = gifski_renderer())
+anim_save("animation.gif", animation = bikeshare_animation, end_pause = 4, height = 1000, width = 700, fps = 6, renderer = gifski_renderer())
 
 
 
 ```
 
-![animate]("https://raw.githubusercontent.com/emilyzhou112/MUSA5080-NJ-BikeShare/main/animation.gif")
+![Animated Map for Bikeshare Demand in Week 33](animation.gif)
 
 
 ## Weather Analysis
@@ -862,7 +862,7 @@ week_predictions %>%
 
 ```
 
-We also need to check if our prediction generalized across space and time. To do that, we mapped the error 
+We also need to check if our predictions generalize across space and time. To do that, we mapped our mean absolute error of model 4 across space. We can see that this model does not do a better job in predicting number of rides at stations along the Hudson River, which are typically stations with higher bikeshare demands during both weekend and weekdays. Other than that, this model does a pretty good job in predicting bikeshare demands at stations with lower number of trips in August. 
 
 ```{r error by station, warning=FALSE, message=FALSE, cache=TRUE}
 
@@ -896,7 +896,7 @@ ggplot(.)+
         )
 
 ```
-
+Comparing across space and time, the figure below shows that model 4 has been pretty consistent in predicting number of trips across time. Stations that are predicted to have higher demand in the weekend will continue to be predicted to have higher demand during the weekdays. Errors carry throughout time. This implies that stations that historically have higher demand have higher variability in the number of rides and are more difficult to predict with the current predictors we have. In fact, our current predictors only explains 50.12% of the variability. What's problematic about this is that if we continue to have larger errors when predicting stations with higher bikeshare demand, we will largely fail to meet the demand of bike users at these stations. 
 
 ```{r comparing errors across space and time, warning=FALSE, message=FALSE, cache=TRUE}
 
@@ -939,7 +939,10 @@ week_predictions %>%
         )
 ```
 
+
 ## Cross-Validation
+
+Finally, we performed 100 cross-validation tests for all five weeks of data using model 4. The MAE value is 0.44, indicating that despite being our best solution so far, the model's prediction error can still be relatively large. It will also be good practice to cross validate across socio-economic indicators to see if bike stations' demand within certain neighborhoods are disproportionately under/over predicted, but our model current does not take into account any socioeconomic variables as predictor variable and the scenario in Jersey City is that more stations are built 
 
 ```{r cross validation}
 
@@ -958,4 +961,9 @@ reg.cv$resample %>%
 
 # Conclusion
 
+In conclusion, this report addresses the critical need for effective bikeshare management strategies in Jersey City by employing machine learning techniques. Our analysis shows that spatial, temporal, and weather-related factors all collectively contribute to the variations in bikeshare demands. We found that it is more accurate to predict bikeshare demand at a particular hour based on the number of trips at the hour immediately before and after, during the same hour a day before, as well as the number of trips at nearby stations. We also found that bikeshare demand are the highest during windy and hot days in Jersey City in August.  The PM rush and overnight during weekdays see the highest demand while the PM rush during weekend sees the highest demand. On top of that, residents of Jersey City uses Citi Bike heavily for work commute to New York City, which has made stations along the Hudson River, particular those closer to ferry stations, the most popular. 
+
+We did some further investigations into stations with greatest bikeshare demand. **Grove St PATH** station, which observes a total of 1117 rides during PM rush on weekday and 801 rides overnight in August, is located in the busy downtown Jersey City.**Hoboken Terminal - River St & Hudson Pl**, which observes a total of 864 rides during PM rush on weekday, is located right next to Hoboken/NJ Transit Terminal and along the Hudson River. **South Waterfront Walkway - Sinatra Dr & 1 St** station, which observes 319 rides overnight on a weekend and 731 rides during PM rush on a weekday is within walking distance to the NJ Transit Terminal and at the entrance to Pier A Park, a waterfront recreation area in Jersey City. Therefore, we may conclude that stations receive higher demand because 1) there's more workers/visitors in downtown area who need to bike to get around. 2) people need to commute to New York for work and need to bike to ferry/transit stations, 3) waterfront recreation areas is great for biking activities over the weekend. Local government should indeed pay more attention to the "supply" and "demand of bikes at those kind of stations and rebalance bikes if needed be. 
+
+Our model is able to capture more than half of the bikeshare demand in Jersey City, though still, it requires improvement to capture more variability. Otherwise, it will fail to meet the needs of Jersey City residents and  increase the difficulties of rebalancing bikes. Nevertheless, the transparency and simplicity of this open-source approach provide a valuable resource for bikeshare programs to enhance user experience and maintain a harmonious bike distribution across stations. As urban mobility continues to evolve, the application of such predictive models becomes increasingly essential for sustainable and efficient transportation solutions.
 
